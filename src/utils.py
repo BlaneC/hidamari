@@ -10,7 +10,7 @@ from gi.repository import Gio, GLib, Wnck  # , Gdk
 import pydbus
 
 try:
-    from commons import *
+    from hidamari.commons import *
 except ModuleNotFoundError:
     from hidamari.commons import *
 
@@ -62,7 +62,6 @@ def is_vdpau_ok():
         logger.error("[Utils] vdpauinfo not found, unable to check VDPAU")
         return False
     return ret.returncode == 0
-
 
 def is_flatpak():
     """
@@ -305,6 +304,34 @@ class WindowHandler:
                 {"is_any_maximized": is_any_maximized, "is_any_fullscreen": is_any_fullscreen})
             logger.debug(f"[WindowHandler] {cur_state}")
 
+class WindowHandlerGnomeWayland:
+    BUS = "io.github.jeffshee.Hidamari"
+    PATH = "/io/github/jeffshee/Hidamari/WindowState"
+    IFACE = "io.github.jeffshee.Hidamari.WindowState"
+
+    def __init__(self, on_window_state_changed: callable):
+        self.on_window_state_changed = on_window_state_changed
+        bus = pydbus.SessionBus()
+        self.proxy = bus.get(self.BUS, self.PATH)
+
+        self.proxy.onStateChanged = self._on_state_changed
+
+        # Initial state
+        self._emit_current()
+
+    def _emit_current(self):
+        print("emitting current: " + str(self.proxy.IsAnyMaximized) + " is_fullscreen: " + str(self.proxy.IsAnyFullscreen))
+        self.on_window_state_changed({
+            "is_any_maximized": bool(self.proxy.IsAnyMaximized),
+            "is_any_fullscreen": bool(self.proxy.IsAnyFullscreen),
+        })
+
+    def _on_state_changed(self, is_maximized, is_fullscreen):
+        print("state changed! is_max: " + str(is_maximized) + " is_fullscreen: " + str(is_fullscreen))
+        self.on_window_state_changed({
+            "is_any_maximized": bool(is_maximized),
+            "is_any_fullscreen": bool(is_fullscreen),
+        })
 
 # class WindowHandlerGnome:
 #     """

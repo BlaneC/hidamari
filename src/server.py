@@ -10,7 +10,7 @@ from gi.repository import GLib
 from pydbus import SessionBus
 
 try:
-    from commons import *
+    from hidamari.commons import *
     from player.video_player import main as video_player_main
     from player.web_player import main as web_player_main
     from gui.control import main as gui_main
@@ -129,7 +129,10 @@ class HidamariServer(object):
 
         if mode in [MODE_VIDEO, MODE_STREAM]:
             self.player_process = Process(
-                name=f"hidamari-player-{self._player_count}", target=video_player_main)
+                name=f"hidamari-player-{self._player_count}",
+                target=video_player_main
+            )
+
         elif mode == MODE_WEBPAGE:
             self.player_process = Process(
                 name=f"hidamari-player-{self._player_count}", target=web_player_main)

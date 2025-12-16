@@ -4,8 +4,8 @@ import sys
 
 # TODO: Is there any way to make these imports look better?
 try:
-    from commons import *
-    from utils import is_gnome, is_wayland, is_nvidia_proprietary, is_vdpau_ok, is_flatpak
+    from hidamari.commons import *
+    from hidamari.utils import is_gnome, is_wayland, is_nvidia_proprietary, is_vdpau_ok, is_flatpak
     import server
 except ModuleNotFoundError:
     # These are imports for Flatpak

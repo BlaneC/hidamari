@@ -7,7 +7,9 @@ import logging
 import pathlib
 import subprocess
 from threading import Timer
-
+from gi.repository import GLib
+import locale
+locale.setlocale(locale.LC_NUMERIC, "C")
 import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk, Gio, Gdk
@@ -21,7 +23,7 @@ try:
     sys.path.insert(1, os.path.join(sys.path[0], '..'))
     from player.base_player import BasePlayer
     from menu import build_menu
-    from commons import *
+    from hidamari.commons import *
     from utils import ActiveHandler, ConfigUtil, is_gnome, is_wayland, is_nvidia_proprietary, is_vdpau_ok, is_flatpak
     from yt_utils import get_formats, get_best_audio, get_optimal_video
 except ModuleNotFoundError:
@@ -34,10 +36,7 @@ except ModuleNotFoundError:
 logger = logging.getLogger(LOGGER_NAME)
 
 if is_wayland():
-    # TODO: Window event monitoring for GNOME Wayland is broken
-    class WindowHandler:
-        def __init__(self, _: callable):
-            pass
+    from hidamari.utils import WindowHandlerGnomeWayland as WindowHandler
 else:
     try:
         from utils import WindowHandler
@@ -47,176 +46,279 @@ else:
 
 class Fade:
     def __init__(self):
-        self.timer = None
+        self._source_id = None
 
-    def start(self, cur, target, step, fade_interval, update_callback: callable = None,
-              complete_callback: callable = None):
-        new_cur = cur + step
-        if (step < 0 and new_cur <= target) or (step > 0 and new_cur >= target):
-            new_cur = target
+    def start(self, cur, target, step,
+              fade_interval=None, fade_interval_ms=None,
+              update_callback=None, complete_callback=None):
+
+        # Backward compatibility
+        if fade_interval_ms is None:
+            if fade_interval is None:
+                raise ValueError("fade_interval or fade_interval_ms must be provided")
+            fade_interval_ms = int(fade_interval * 1000)
+
+        self.cancel()
+
+        def tick():
+            nonlocal cur
+            cur += step
+
+            done = (step < 0 and cur <= target) or (step > 0 and cur >= target)
+            if done:
+                cur = target
+
             if update_callback:
-                update_callback(int(new_cur))
-            if complete_callback:
-                complete_callback()
-        else:
-            if update_callback:
-                update_callback(int(new_cur))
-            self.timer = Timer(fade_interval, self.start,
-                               args=[new_cur, target, step, fade_interval, update_callback, complete_callback])
-            self.timer.start()
+                update_callback(int(cur))
+
+            if done:
+                if complete_callback:
+                    complete_callback()
+                self._source_id = None
+                return False
+
+            return True
+
+        self._source_id = GLib.timeout_add(fade_interval_ms, tick)
 
     def cancel(self):
-        if self.timer:
-            self.timer.cancel()
+        if self._source_id is not None:
+            GLib.source_remove(self._source_id)
+            self._source_id = None
 
+class VideoBackend:
+    def play(self): ...
+    def stop(self): ...
+    def pause(self): ...
+    def is_playing(self) -> bool: ...
+    def set_volume(self, vol: int): ...
+    def get_volume(self) -> int: ...
+    def set_mute(self, mute: bool): ...
+    def set_position(self, pos: float): ...
+    def get_position(self) -> float: ...
+    def set_media(self, source: str): ...
 
-class VLCWidget(Gtk.DrawingArea):
-    """
-    Simple VLC widget.
-    Its player can be controlled through the 'player' attribute, which
-    is a vlc.MediaPlayer() instance.
-    """
-    __gtype_name__ = "VLCWidget"
-
-    def __init__(self, width, height):
-        Gtk.DrawingArea.__init__(self)
-
-        # Spawn a VLC instance and create a new media player to embed.
-        # Some options need to be specified when instantiating VLC.
-        # --no-disable-screensaver: Allow screensaver.
-        vlc_options = ["--no-disable-screensaver"]
+class VLCBackend(VideoBackend):
+    def __init__(self):
+        vlc_options = [
+            "--no-disable-screensaver",
+            "--drop-late-frames",
+            "--skip-frames",
+            "--quiet",
+        ]
         self.instance = vlc.Instance(vlc_options)
         self.player = self.instance.media_player_new()
 
-        def handle_embed(*args):
-            self.player.set_xwindow(self.get_window().get_xid())
-            return True
+    def attach(self, widget: Gtk.DrawingArea):
+        self.player.set_xwindow(widget.get_window().get_xid())
 
-        # Embed and set size.
-        self.connect("realize", handle_embed)
-        self.set_size_request(width, height)
+    def set_media(self, source: str):
+        media = self.instance.media_new(source)
+        media.add_option("input-repeat=65535")
+        self.player.set_media(media)
+
+    def play(self): self.player.play()
+    def stop(self): self.player.stop()
+    def pause(self): self.player.pause()
+    def is_playing(self): return bool(self.player.is_playing())
+    def set_volume(self, v): self.player.audio_set_volume(v)
+    def get_volume(self): return self.player.audio_get_volume()
+    def set_mute(self, m): self.player.audio_set_mute(m)
+    def set_position(self, p): self.player.set_position(p)
+    def get_position(self): return self.player.get_position()
+
+# class MPVBackend(VideoBackend):
+#     def __init__(self, xid: int):
+#         print("Using MPV backend")
+#         self.mpv = MPV(
+#             wid=str(xid),
+#             vo="gpu",
+#             hwdec="auto",
+#             loop="inf",
+#             osc="no",
+#             input_default_bindings=False,
+#             input_vo_keyboard=False,
+#         )
+#         self._loaded = False
+
+#         @self.mpv.event_callback('file-loaded')
+#         def _on_loaded(event):
+#             self._loaded = True
+
+#     def set_media(self, source: str):
+#         self.mpv.play(source)
+
+#     def play(self): self.mpv.pause = False
+#     def stop(self): self.mpv.stop()
+#     def pause(self): self.mpv.pause = True
+#     def is_playing(self): return not self.mpv.pause
+#     def set_volume(self, v): self.mpv.volume = v
+#     def get_volume(self): return int(self.mpv.volume)
+#     def set_mute(self, m): self.mpv.mute = m
+#     def set_position(self, p):
+#         if not self._loaded:
+#             return
+#         self.mpv.seek(p * 100, reference="absolute-percent")
+#     def get_position(self): return (self.mpv.percent_pos or 0) / 100.0
 
 
 class PlayerWindow(Gtk.ApplicationWindow):
-    def __init__(self, name, width, height, *args, **kwargs):
-        super(PlayerWindow, self).__init__(*args, **kwargs)
-        # Setup a VLC widget given the provided width and height.
+    def __init__(self, name, width, height, *, application):
+        super().__init__(application=application)
+
+        self.name = name
         self.width = width
         self.height = height
-        self.name = name
-        self.__vlc_widget = VLCWidget(width, height)
-        self.add(self.__vlc_widget)
-        self.__vlc_widget.show()
 
-        # These are to allow us to right click. VLC can't hijack mouse input, and probably not key inputs either in
-        # Case we want to add keyboard shortcuts later on.
-        self.__vlc_widget.player.video_set_mouse_input(False)
-        self.__vlc_widget.player.video_set_key_input(False)
+        # 🔑 IMPORTANT: use a private attribute
+        self._video_widget = Gtk.DrawingArea()
+        self.add(self._video_widget)
+        self._video_widget.show()
 
-        # A timer that handling fade-in/out
         self.fade = Fade()
+        self.backend: VideoBackend | None = None
+        self._pending_source = None
+        # self.use_mpv = use_mpv
+        
+        self._video_widget.connect("realize", self._on_video_realize)
 
-        self.menu = None
-        self.connect("button-press-event", self._on_button_press_event)
+    def _on_video_realize(self, widget):
+        # print("MPV:", self.use_mpv)
+
+        # if self.use_mpv:
+        #     xid = widget.get_window().get_xid()
+        #     self.backend = MPVBackend(xid)
+        # else:
+        self.backend = VLCBackend()
+        self.backend.attach(widget)
+
+        if self._pending_source:
+            self.backend.set_media(self._pending_source)
+            self._pending_source = None
+
+    def _attach_vlc(self, widget):
+        if self.backend:
+            self.backend.attach(widget)
+
+    # ---- Playback API (backend-agnostic) ----
+
+    def set_media(self, source: str):
+        if self.backend is None:
+            self._pending_source = source
+        else:
+            self.backend.set_media(source)
 
     def play(self):
-        self.__vlc_widget.player.play()
+        if self.backend:
+            self.backend.play()
+
+    def stop(self):
+        if self.backend:
+            self.backend.stop()
+
+    def pause(self):
+        self.backend.pause()
+
+    def is_playing(self):
+        if self.backend:
+            return self.backend.is_playing()
+        else:
+            return False
+
+    def set_volume(self, v: int):
+        if self.backend:
+            self.backend.set_volume(v)
+
+    def get_volume(self):
+        if self.backend:
+            return self.backend.get_volume()
+        else:
+            return 0
+
+    def set_mute(self, m: bool):
+        if self.backend:
+            self.backend.set_mute(m)
+
+    def set_position(self, p: float):
+        if self.backend:
+            self.backend.set_position(p)
+
+    def get_position(self):
+        if self.backend:
+            return self.backend.get_position()
+        else:
+            return 0
+
+    # ---- Fade helpers ----
 
     def play_fade(self, target, fade_duration_sec, fade_interval):
         self.play()
         cur = 0
         step = (target - cur) / (fade_duration_sec / fade_interval)
         self.fade.cancel()
-        self.fade.start(cur=cur, target=target, step=step,
-                        fade_interval=fade_interval, update_callback=self.set_volume)
-
-    def is_playing(self):
-        return self.__vlc_widget.player.is_playing()
-
-    def pause(self):
-        if self.is_playing():
-            self.__vlc_widget.player.pause()
+        self.fade.start(
+            cur,
+            target,
+            step,
+            fade_interval=fade_interval,
+            update_callback=self.set_volume
+        )
 
     def pause_fade(self, fade_duration_sec, fade_interval):
         cur = self.get_volume()
-        target = 0
-        step = (target - cur) / (fade_duration_sec / fade_interval)
+        step = -cur / (fade_duration_sec / fade_interval)
         self.fade.cancel()
-        self.fade.start(cur=cur, target=target, step=step, fade_interval=fade_interval, update_callback=self.set_volume,
-                        complete_callback=self.pause)
+        self.fade.start(
+            cur,
+            0,
+            step,
+            fade_interval=fade_interval,
+            update_callback=self.set_volume,
+            complete_callback=self.stop
+        )
 
-    def volume_fade(self, target, fade_duration_sec, fade_interval):
-        cur = self.get_volume()
-        step = (target - cur) / (fade_duration_sec / fade_interval)
-        self.fade.cancel()
-        self.fade.start(cur=cur, target=target, step=step, fade_interval=fade_interval, update_callback=self.set_volume)
+    # def centercrop(self, video_width=None, video_height=None):
+    #     # Getting dimension from libvlc is not reliable enough (need to consider timing)
+    #     if (video_width, video_height) == (None, None):
+    #         video_width, video_height = self.__vlc_widget.player.video_get_size()
+    #         if video_width == 0 or video_height == 0:
+    #             logger.warning("[CenterCrop] video_get_size is not ready yet")
+    #             return
+    #     logger.debug(f"[CenterCrop] Dimension {video_width}x{video_height}")
+    #     window_ratio = self.width / self.height
+    #     video_ratio = video_width / video_height
+    #     if window_ratio == video_ratio:
+    #         return
+    #     elif video_ratio < window_ratio:
+    #         # If window is wider than video
+    #         # For example video ratio (4:3)=1.33..., window ratio (16:9)=1.77...
+    #         crop_height = video_width / window_ratio
+    #         top_offset = (video_height - crop_height) / 2
+    #         crop_geometry = f"{int(video_width)}x{int(crop_height+top_offset)}+0+{int(top_offset)}"
 
-    def media_new(self, *args):
-        return self.__vlc_widget.instance.media_new(*args)
+    #     else:
+    #         # If video is wider than window
+    #         crop_width = video_height * window_ratio
+    #         left_offset = (video_width - crop_width) / 2
+    #         crop_geometry = f"{int(crop_width+left_offset)}x{int(video_height)}+{int(left_offset)}+0"
 
-    def set_media(self, *args):
-        self.__vlc_widget.player.set_media(*args)
+    #     # Crop geometry WxH+L+T: Width x Height + Left Offset + top Offset
+    #     logger.debug(f"[CenterCrop] Crop geometry: {crop_geometry}")
+    #     self.__vlc_widget.player.video_set_crop_geometry(crop_geometry)
 
-    def set_volume(self, *args):
-        self.__vlc_widget.player.audio_set_volume(*args)
+    # def add_audio_track(self, audio):
+    #     self.__vlc_widget.player.add_slave(vlc.MediaSlaveType(1), audio, True)
 
-    def get_volume(self):
-        return self.__vlc_widget.player.audio_get_volume()
+    # def _on_button_press_event(self, widget, event):
+    #     if event.type == Gdk.EventType.BUTTON_PRESS and event.button == 3:
+    #         if not self.menu:
+    #             self.menu = build_menu(MODE_VIDEO)
+    #         self.menu.popup_at_pointer()
+    #         return True
+    #     return False
 
-    def set_mute(self, is_mute):
-        return self.__vlc_widget.player.audio_set_mute(is_mute)
-
-    def get_position(self):
-        return self.__vlc_widget.player.get_position()
-
-    def set_position(self, *args):
-        self.__vlc_widget.player.set_position(*args)
-
-    def snapshot(self, *args):
-        return self.__vlc_widget.player.video_take_snapshot(*args)
-
-    def centercrop(self, video_width=None, video_height=None):
-        # Getting dimension from libvlc is not reliable enough (need to consider timing)
-        if (video_width, video_height) == (None, None):
-            video_width, video_height = self.__vlc_widget.player.video_get_size()
-            if video_width == 0 or video_height == 0:
-                logger.warning("[CenterCrop] video_get_size is not ready yet")
-                return
-        logger.debug(f"[CenterCrop] Dimension {video_width}x{video_height}")
-        window_ratio = self.width / self.height
-        video_ratio = video_width / video_height
-        if window_ratio == video_ratio:
-            return
-        elif video_ratio < window_ratio:
-            # If window is wider than video
-            # For example video ratio (4:3)=1.33..., window ratio (16:9)=1.77...
-            crop_height = video_width / window_ratio
-            top_offset = (video_height - crop_height) / 2
-            crop_geometry = f"{int(video_width)}x{int(crop_height+top_offset)}+0+{int(top_offset)}"
-
-        else:
-            # If video is wider than window
-            crop_width = video_height * window_ratio
-            left_offset = (video_width - crop_width) / 2
-            crop_geometry = f"{int(crop_width+left_offset)}x{int(video_height)}+{int(left_offset)}+0"
-
-        # Crop geometry WxH+L+T: Width x Height + Left Offset + top Offset
-        logger.debug(f"[CenterCrop] Crop geometry: {crop_geometry}")
-        self.__vlc_widget.player.video_set_crop_geometry(crop_geometry)
-
-    def add_audio_track(self, audio):
-        self.__vlc_widget.player.add_slave(vlc.MediaSlaveType(1), audio, True)
-
-    def _on_button_press_event(self, widget, event):
-        if event.type == Gdk.EventType.BUTTON_PRESS and event.button == 3:
-            if not self.menu:
-                self.menu = build_menu(MODE_VIDEO)
-            self.menu.popup_at_pointer()
-            return True
-        return False
-
-    def get_name(self):
-        return self.name
+    # def get_name(self):
+    #     return self.name
 
 
 class VideoPlayer(BasePlayer):
@@ -238,7 +340,8 @@ class VideoPlayer(BasePlayer):
     """
 
     def __init__(self, *args, **kwargs):
-        super(VideoPlayer, self).__init__(*args, **kwargs)
+        #self.use_mpv = use_mpv
+        super().__init__(*args, **kwargs)
 
         # We need to initialize X11 threads so we can use hardware decoding.
         # `libX11.so.6` fix for Fedora 33
@@ -257,6 +360,7 @@ class VideoPlayer(BasePlayer):
                     break
 
         self.config = None
+        #self.use_mpv = use_mpv
         self.reload_config()
 
         # Static wallpaper (currently for GNOME only)
@@ -366,22 +470,16 @@ class VideoPlayer(BasePlayer):
             for (monitor, window) in self.windows.items():
                 source = data_source[monitor.get_model()] if monitor.get_model() in data_source and len(data_source[monitor.get_model()]) != 0 else data_source['Default']
                 logger.info(f"Setting source {source} to {monitor.get_model()}")
-                media = window.media_new(source)
-                """
-                This loops the media itself. Using -R / --repeat and/or -L / --loop don't seem to work. However,
-                based on reading, this probably only repeats 65535 times, which is still a lot of time, but might
-                cause the program to stop playback if it's left on for a very long time.
-                """
-                media.add_option("input-repeat=65535")
-                # Prevent awful ear-rape with multiple instances.
+                window.set_media(source)
+
                 if not monitor.is_primary():
-                    media.add_option("no-audio")
-                window.set_media(media)
+                    window.set_mute(True)
+
                 window.set_position(0.0)
-                if monitor.get_model() not in data_source or len(data_source[monitor.get_model()]) == 0:
-                    window.centercrop(video_width['Default'], video_height['Default'])
-                else:                
-                    window.centercrop(video_width[monitor.get_model()], video_height[monitor.get_model()])
+                # if monitor.get_model() not in data_source or len(data_source[monitor.get_model()]) == 0:
+                #     window.centercrop(video_width['Default'], video_height['Default'])
+                # else:                
+                #     window.centercrop(video_width[monitor.get_model()], video_height[monitor.get_model()])
 
         elif self.mode == MODE_STREAM:
             source = data_source['Default']
@@ -402,7 +500,7 @@ class VideoPlayer(BasePlayer):
                     # `get_optimal_video` now might return video with audio.
                     media.add_option("no-audio")
                 window.set_position(0.0)
-                window.centercrop(video_width, video_height)
+                # window.centercrop(video_width, video_height)
         else:
             raise ValueError("Invalid mode")
 
