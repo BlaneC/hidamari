@@ -126,6 +126,36 @@ class VLCBackend(VideoBackend):
     def set_mute(self, m): self.player.audio_set_mute(m)
     def set_position(self, p): self.player.set_position(p)
     def get_position(self): return self.player.get_position()
+    def add_audio_track(self, audio):
+        self.player.add_slave(vlc.MediaSlaveType(1), audio, True)
+    def centercrop(self, video_width=None, video_height=None):
+        # Getting dimension from libvlc is not reliable enough (need to consider timing)
+        if (video_width, video_height) == (None, None):
+            video_width, video_height = self.player.video_get_size()
+            if video_width == 0 or video_height == 0:
+                logger.warning("[CenterCrop] video_get_size is not ready yet")
+                return
+        logger.debug(f"[CenterCrop] Dimension {video_width}x{video_height}")
+        window_ratio = self.width / self.height
+        video_ratio = video_width / video_height
+        if window_ratio == video_ratio:
+            return
+        elif video_ratio < window_ratio:
+            # If window is wider than video
+            # For example video ratio (4:3)=1.33..., window ratio (16:9)=1.77...
+            crop_height = video_width / window_ratio
+            top_offset = (video_height - crop_height) / 2
+            crop_geometry = f"{int(video_width)}x{int(crop_height+top_offset)}+0+{int(top_offset)}"
+
+        else:
+            # If video is wider than window
+            crop_width = video_height * window_ratio
+            left_offset = (video_width - crop_width) / 2
+            crop_geometry = f"{int(crop_width+left_offset)}x{int(video_height)}+{int(left_offset)}+0"
+
+        # Crop geometry WxH+L+T: Width x Height + Left Offset + top Offset
+        logger.debug(f"[CenterCrop] Crop geometry: {crop_geometry}")
+        self.player.video_set_crop_geometry(crop_geometry)
 
 # class MPVBackend(VideoBackend):
 #     def __init__(self, xid: int):
@@ -277,48 +307,22 @@ class PlayerWindow(Gtk.ApplicationWindow):
             complete_callback=self.stop
         )
 
-    # def centercrop(self, video_width=None, video_height=None):
-    #     # Getting dimension from libvlc is not reliable enough (need to consider timing)
-    #     if (video_width, video_height) == (None, None):
-    #         video_width, video_height = self.__vlc_widget.player.video_get_size()
-    #         if video_width == 0 or video_height == 0:
-    #             logger.warning("[CenterCrop] video_get_size is not ready yet")
-    #             return
-    #     logger.debug(f"[CenterCrop] Dimension {video_width}x{video_height}")
-    #     window_ratio = self.width / self.height
-    #     video_ratio = video_width / video_height
-    #     if window_ratio == video_ratio:
-    #         return
-    #     elif video_ratio < window_ratio:
-    #         # If window is wider than video
-    #         # For example video ratio (4:3)=1.33..., window ratio (16:9)=1.77...
-    #         crop_height = video_width / window_ratio
-    #         top_offset = (video_height - crop_height) / 2
-    #         crop_geometry = f"{int(video_width)}x{int(crop_height+top_offset)}+0+{int(top_offset)}"
+    def centercrop(self, video_width=None, video_height=None):
+        self.backend.centercrop(video_width, video_height)
 
-    #     else:
-    #         # If video is wider than window
-    #         crop_width = video_height * window_ratio
-    #         left_offset = (video_width - crop_width) / 2
-    #         crop_geometry = f"{int(crop_width+left_offset)}x{int(video_height)}+{int(left_offset)}+0"
+    def add_audio_track(self, audio):
+        self.backend.add_audio_track(audio)
 
-    #     # Crop geometry WxH+L+T: Width x Height + Left Offset + top Offset
-    #     logger.debug(f"[CenterCrop] Crop geometry: {crop_geometry}")
-    #     self.__vlc_widget.player.video_set_crop_geometry(crop_geometry)
+    def _on_button_press_event(self, widget, event):
+        if event.type == Gdk.EventType.BUTTON_PRESS and event.button == 3:
+            if not self.menu:
+                self.menu = build_menu(MODE_VIDEO)
+            self.menu.popup_at_pointer()
+            return True
+        return False
 
-    # def add_audio_track(self, audio):
-    #     self.__vlc_widget.player.add_slave(vlc.MediaSlaveType(1), audio, True)
-
-    # def _on_button_press_event(self, widget, event):
-    #     if event.type == Gdk.EventType.BUTTON_PRESS and event.button == 3:
-    #         if not self.menu:
-    #             self.menu = build_menu(MODE_VIDEO)
-    #         self.menu.popup_at_pointer()
-    #         return True
-    #     return False
-
-    # def get_name(self):
-    #     return self.name
+    def get_name(self):
+        return self.name
 
 
 class VideoPlayer(BasePlayer):
