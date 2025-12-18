@@ -4,6 +4,7 @@ import threading
 import requests
 import multiprocessing as mp
 import setproctitle
+import subprocess
 
 # TODO: Port to Gtk4/adwaita someday...
 import gi
@@ -75,13 +76,16 @@ class ControlPanel(Gtk.Application):
         self.video_paths = None
         self.all_key = "all"
 
-        self.is_autostart = os.path.isfile(AUTOSTART_DESKTOP_PATH)
-
+        #self.is_autostart = os.path.isfile(AUTOSTART_DESKTOP_PATH)
+        self.is_autostart = False
         self._connect_server()
         self._load_config()
 
         # initialize monitors
         self.monitors = Monitors()
+        
+        self._load_config()
+        self._normalize_data_source()
         # get video paths
         video_paths = self.config[CONFIG_KEY_DATA_SOURCE]
         for monitor in self.monitors.get_monitors():
@@ -92,6 +96,22 @@ class ControlPanel(Gtk.Application):
                 self.monitors.get_monitor(monitor).set_wallpaper(video_paths['Default'])
 
         self._setup_context_menu() # setup context menu for selecting monitors
+
+
+    def _normalize_data_source(self):
+        paths = self.config.get(CONFIG_KEY_DATA_SOURCE, {})
+
+        if not isinstance(paths, dict):
+            paths = {}
+
+        # Ensure Default always exists
+        if "Default" not in paths:
+            # pick first available value or None
+            fallback = next(iter(paths.values()), None)
+            paths["Default"] = fallback
+
+        self.config[CONFIG_KEY_DATA_SOURCE] = paths
+
 
     def _connect_server(self):
         try:
@@ -364,7 +384,7 @@ class ControlPanel(Gtk.Application):
         action.set_state(state)
         self.is_autostart = bool(state)
         logger.info(f"[GUI] {action.get_name()}: {state}")
-        setup_autostart(state)
+        #setup_autostart(state)
 
     def on_static_wallpaper(self, action, state):
         action.set_state(state)

@@ -11,6 +11,7 @@ import pydbus
 
 try:
     from hidamari.commons import *
+    from hidamari.commons import CONFIG_TEMPLATE
 except ModuleNotFoundError:
     from hidamari.commons import *
 
@@ -73,45 +74,46 @@ def is_flatpak():
 
 
 def setup_autostart(autostart):
-    if is_flatpak():
-        """
-        Use portal to autostart for Flatpak
-        Documentation:
-        https://libportal.org/method.Portal.request_background.html
-        https://libportal.org/method.Portal.request_background_finish.html 
-        """
+    print("No more of that")
+    # if is_flatpak():
+    #     """
+    #     Use portal to autostart for Flatpak
+    #     Documentation:
+    #     https://libportal.org/method.Portal.request_background.html
+    #     https://libportal.org/method.Portal.request_background_finish.html 
+    #     """
 
-        gi.require_version("Xdp", "1.0")
-        from gi.repository import Xdp
-        xdp = Xdp.Portal.new()
+    #     gi.require_version("Xdp", "1.0")
+    #     from gi.repository import Xdp
+    #     xdp = Xdp.Portal.new()
 
-        # Request Autostart
-        xdp.request_background(
-            None,  # parent
-            "Autostart Hidamari in background",  # reason
-            ['hidamari', '-b'],  # commandline
-            Xdp.BackgroundFlags.AUTOSTART if autostart else Xdp.BackgroundFlags.NONE,  # flags
-            None,  # cancellable
-            lambda portal, result, user_data: logger.debug(
-                f"[Utils] autostart={autostart}, request_background sucess={portal.request_background_finish(result)}"),  # callback
-            None,  # user_data
-        )
+    #     # Request Autostart
+    #     xdp.request_background(
+    #         None,  # parent
+    #         "Autostart Hidamari in background",  # reason
+    #         ['hidamari', '-b'],  # commandline
+    #         Xdp.BackgroundFlags.AUTOSTART if autostart else Xdp.BackgroundFlags.NONE,  # flags
+    #         None,  # cancellable
+    #         lambda portal, result, user_data: logger.debug(
+    #             f"[Utils] autostart={autostart}, request_background sucess={portal.request_background_finish(result)}"),  # callback
+    #         None,  # user_data
+    #     )
         
-    os.makedirs(AUTOSTART_DIR, exist_ok=True)
-    logger.debug(
-        f"[Utils] autostart={autostart}, path={AUTOSTART_DESKTOP_PATH}")
-    if autostart:
-        with open(AUTOSTART_DESKTOP_PATH, mode='w') as f:
-            if is_flatpak():
-                # Write files to the sandbox as well, for the following reasons:
-                # (1) So that we know if autostart is enabled by looking the file in sandbox
-                # (2) Acts as a fallback in case the portal doesn't work
-                f.write(AUTOSTART_DESKTOP_CONTENT_FLATPAK)
-            else:
-                f.write(AUTOSTART_DESKTOP_CONTENT)
-    else:
-        if os.path.isfile(AUTOSTART_DESKTOP_PATH):
-            os.remove(AUTOSTART_DESKTOP_PATH)
+    # os.makedirs(AUTOSTART_DIR, exist_ok=True)
+    # logger.debug(
+    #     f"[Utils] autostart={autostart}, path={AUTOSTART_DESKTOP_PATH}")
+    # if autostart:
+    #     with open(AUTOSTART_DESKTOP_PATH, mode='w') as f:
+    #         if is_flatpak():
+    #             # Write files to the sandbox as well, for the following reasons:
+    #             # (1) So that we know if autostart is enabled by looking the file in sandbox
+    #             # (2) Acts as a fallback in case the portal doesn't work
+    #             f.write(AUTOSTART_DESKTOP_CONTENT_FLATPAK)
+    #         else:
+    #             f.write(AUTOSTART_DESKTOP_CONTENT)
+    # else:
+    #     if os.path.isfile(AUTOSTART_DESKTOP_PATH):
+    #         os.remove(AUTOSTART_DESKTOP_PATH)
 
 
 def get_video_paths():
